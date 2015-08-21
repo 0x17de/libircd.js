@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node example.js"
   },
-  "main": "example.js"
+  "main": "example.js",
   "license": {
     "type": "MIT",
     "url": "https://github.com/icetruckde/libircd.js/blob/master/LICENSE"
