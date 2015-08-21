@@ -16,7 +16,7 @@
     "url": "https://github.com/icetruckde/libircd.js/blob/master/LICENSE"
   },
   "bugs": {
-    "url": "https://github.com/icetruckde/libircd.js/issues
+    "url": "https://github.com/icetruckde/libircd.js/issues"
   },
   "dependencies": {
     "net": "^1.0.x",
