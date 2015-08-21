@@ -2,10 +2,13 @@ exports.IrcServer = IrcServer;
 
 var net = require('net');
 var uuid = require('node-uuid');
+var sha1 = require('sha1');
 
 var version = '0.1.0';
 var servNick = 'example.com';
 var servHostname = 'example.com';
+var servPassword = 'wealllikedebian';
+var servPasswordSha1 = servPassword ? sha1(servPassword) : null;
 
 var timeCreated = (new Date()).toUTCString();
 
@@ -16,14 +19,20 @@ var STATE = {
 var KILLREASON = {
 	timeout: 0,
 	connectionClosed: 1,
-	kill: 2
+	kill: 2,
+	badPassword: 3
 };
 
 var handlerMap = {
-	CAP: function(server, client, splitData, data) {
+	CAP: function(server, client, splitData, line) {
 		switch (splitData[1]) {
 		case 'LS':
 			client.answer('CAP * LS :multi-prefix');
+			break;
+		case 'RE':
+			if (splitData[2] == 'Q'
+			 && client.state == STATE.ready)
+				client.answer('CAP '+client.nick+' ACK :multi-previx');
 			break;
 		case 'END':
 			break;
@@ -31,16 +40,23 @@ var handlerMap = {
 			console.log('Unknown cap: '+splitData[1]);
 		}
 	},
-	NICK: function(server, client, splitData, data) {
+	PASS: function(server, client, splitData, line) {
+		var password = line.substr(splitData[0].length+1);
+		console.log(servPasswordSha1 +":"+ sha1(password) +" : "+ servPassword +":"+ password);
+		client.logged = servPasswordSha1 == sha1(password) && servPassword == password;
+	},
+	NICK: function(server, client, splitData, line) {
 		if (client.state != STATE.initial) return;
+		if (servPassword != null && !client.logged)
+			server.killClient(client, KILLREASON.badPassword);
 
 		if (server.checkSetNick(client, splitData[1]))
 			client.state = STATE.ready;
 	},
-	USER: function(server, client, splitData, data) {
+	USER: function(server, client, splitData, line) {
 		client.sendWelcome();
 	},
-	JOIN: function(server, client, splitData, data) {
+	JOIN: function(server, client, splitData, line) {
 		if (client.state != STATE.ready) return;
 
 		var channelString = splitData[1] || "";
@@ -51,7 +67,7 @@ var handlerMap = {
 		for(var i = 0; i < channelList.length; ++i)
 			server.clientJoinsChannel(client, channelList[i], keyList[i]);
 	},
-	PART: function(server, client, splitData, data) {
+	PART: function(server, client, splitData, line) {
 		if (client.state != STATE.ready) return;
 
 		var channelString = splitData[1] || "";
@@ -60,14 +76,14 @@ var handlerMap = {
 		for(var i = 0; i < channelList.length; ++i)
 			server.clientLeavesChannel(client, channelList[i]);
 	},
-	PING: function(server, client, splitData, data) {
+	PING: function(server, client, splitData, line) {
 		client.answer('PONG '+servHostname+' :'+splitData[1]);
 	},
-	PRIVMSG: function(server, client, splitData, data) {
+	PRIVMSG: function(server, client, splitData, line) {
 		if (client.state != STATE.ready) return;
 
 		var channelName = splitData[1];
-		var message = String(data).substr(splitData[0].length+splitData[1].length+3);
+		var message = line.substr(splitData[0].length+splitData[1].length+3);
 
 		var channel = client.channels[channelName];
 		if (!channel) return;
@@ -126,10 +142,16 @@ IrcServer.prototype.getOrCreateChannel = function(channelName, opt_clientOperato
 	return channel;
 }
 IrcServer.prototype.killClient = function(client, killReason) {
+	switch (killReason) {
+	case KILLREASON.badPassword:
+		client.answer('ERROR :Access denied: Bad password?');
+		break;
+	}
 	for (var i = 0; i < client.channels; ++i)
 		this.clientLeavesChannel(client, client.channels[i], killReason);
 	delete this.clientsByName[client.nick];
 	delete this.clientsByGuid[client.guid];
+	client.close();
 }
 IrcServer.prototype.clientJoinsChannel = function(client, channelName, key) {
 	// @TODO: use key
@@ -162,7 +184,8 @@ IrcServer.prototype.start = function(ip, port) {
 		console.log('NEW '+c.nick);
 
 		c.on('data', function(data) {
-			lines = String(data).split('\n');
+			data = String(data); // always string data
+			lines = data.split('\n');
 			while (lines.length > 0) {
 				var line = lines.shift().replace('\r', '');
 				if (line.length == 0) continue;
@@ -173,7 +196,7 @@ IrcServer.prototype.start = function(ip, port) {
 	
 				var handler = handlerMap[splitData[0]];
 				if (handler)
-					handler(self, client, splitData, data);
+					handler(self, client, splitData, line);
 				else
 					console.log("!! Unknown handler: "+splitData[0]);
 			}
@@ -255,12 +278,18 @@ Channel.prototype.deliverMessage = function(client, message) {
 
 function Client(server, socket) {
 	this.socket = socket;
+	this.socketClosed = false;
 	this.state = STATE.initial;
 	this.channels = {};
 	this.nick = null;
 	this.guid = null;
 }
+Client.prototype.close = function() {
+	this.socketClosed = true;
+	this.socket.destroy();
+}
 Client.prototype.write = function(data) {
+	if (this.socketClosed) return;
 	console.log('<< '+data);
 	return this.socket.write(data+'\r\n');
 }
