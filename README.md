@@ -5,3 +5,4 @@ Meant to be simple.
 Working yet:
 * Connect/Join/Part
 * Write messages
+* Login restriction via global password
