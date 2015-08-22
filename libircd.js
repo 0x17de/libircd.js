@@ -1,16 +1,16 @@
 exports.IrcServer = IrcServer;
+exports.Channel = Channel;
+exports.Client = Client;
 
 var net = require('net');
 var uuid = require('node-uuid');
 var sha1 = require('sha1');
+var EventEmitter = require('events').EventEmitter;
+var util = require('util');
 
-var version = '0.1.0';
+var version = '0.1.1';
 var servNick = 'example.com';
 var servHostname = 'example.com';
-var servPassword = 'wealllikedebian';
-var servPasswordSha1 = servPassword ? sha1(servPassword) : null;
-
-var timeCreated = (new Date()).toUTCString();
 
 var STATE = {
 	initial: 0,
@@ -20,7 +20,8 @@ var KILLREASON = {
 	timeout: 0,
 	connectionClosed: 1,
 	kill: 2,
-	badPassword: 3
+	badPassword: 3,
+	kick: 4
 };
 
 var handlerMap = {
@@ -42,12 +43,11 @@ var handlerMap = {
 	},
 	PASS: function(server, client, splitData, line) {
 		var password = line.substr(splitData[0].length+1);
-		console.log(servPasswordSha1 +":"+ sha1(password) +" : "+ servPassword +":"+ password);
-		client.logged = servPasswordSha1 == sha1(password) && servPassword == password;
+		client.logged = server.passwordSha1 == sha1(password) && server.password == password;
 	},
 	NICK: function(server, client, splitData, line) {
 		if (client.state != STATE.initial) return;
-		if (servPassword != null && !client.logged)
+		if (server.password != null && !client.logged)
 			server.killClient(client, KILLREASON.badPassword);
 
 		if (server.checkSetNick(client, splitData[1]))
@@ -64,8 +64,14 @@ var handlerMap = {
 		var channelList = channelString.split(",");
 		var keys = splitData[2];
 		var keyList = (keys && keys.length > 0) ? keys.split(",") : [];
-		for(var i = 0; i < channelList.length; ++i)
-			server.clientJoinsChannel(client, channelList[i], keyList[i]);
+		channelList.forEach(function(channelName, i) {
+			var key = keyList[i];
+			var joinFunction = function() {
+				server.clientJoinsChannel(client, channelName, key);
+			}
+			if (!server.emit('roomchange', {guid: client.guid, nick: client.nick, bJoin: true, channel: channelName, joinFunction: joinFunction}))
+				joinFunction();
+		});
 	},
 	PART: function(server, client, splitData, line) {
 		if (client.state != STATE.ready) return;
@@ -73,8 +79,10 @@ var handlerMap = {
 		var channelString = splitData[1] || "";
 		if (channelString.length == 0) return;
 		var channelList = channelString.split(",");
-		for(var i = 0; i < channelList.length; ++i)
+		for(var i = 0; i < channelList.length; ++i) {
 			server.clientLeavesChannel(client, channelList[i]);
+			server.emit('roomchange', {guid: client.guid, nick: client.nick, bJoin: false, channel: channelList[i]});
+		}
 	},
 	PING: function(server, client, splitData, line) {
 		client.answer('PONG '+servHostname+' :'+splitData[1]);
@@ -89,14 +97,19 @@ var handlerMap = {
 		if (!channel) return;
 		console.log(channel.name +' <'+client.nick+'> '+message);
 		channel.deliverMessage(client, message);
+		server.emit('message', {guid: client.guid, nick: client.nick, message: message, channel: channelName});
 	}
 };
 
-function IrcServer() {
+function IrcServer(opt_password) {
+	this.password = opt_password;
+	this.passwordSha1 = opt_password ? sha1(opt_password) : null;
+
 	this.clientsByName = {};
 	this.clientsByGuid = {};
 	this.channels = {};
 }
+util.inherits(IrcServer, EventEmitter);
 IrcServer.invalidChannelNameCharacters = [0x20, 0x0b, 0x00, 0x0d, 0x0a, 0x2c];
 IrcServer.prototype.isValidChannelName = function(name) {
 	if (name.length == 0) return false;
@@ -108,6 +121,11 @@ IrcServer.prototype.isValidChannelName = function(name) {
 IrcServer.nickNameValidator = new RegExp('^[a-z]([a-z0-9\\[\\]\\\\`^{}_-])*$', 'i');
 IrcServer.prototype.isNickInUse = function(name) {
 	return !!this.clientsByName[name];
+}
+IrcServer.prototype.kick = function(nickOrClient, channelOrName) {
+	var client = (nickOrClient instanceof Client) ? nickOrClient : this.clientsByName[nickOrClient];
+	if (!client) return;
+	this.clientLeavesChannel(client, channelOrNick, KILLREASON.kick);
 }
 IrcServer.prototype.isValidNickName = function(name) {
 	return IrcServer.nickNameValidator.test(name);
@@ -126,14 +144,19 @@ IrcServer.prototype.checkSetNick = function(client, nick) {
 		return false;
 	}
 	client.setNickName(nick);
-	this.clientsByName[nick] = client;
 
+	this.addClient(client);
+	this.emit('connect', {guid: client.guid, nick: nick});
+	return true;
+}
+IrcServer.prototype.addClient = function(client) {
+	this.clientsByName[client.nick] = client;
+	var guid;
 	do {
 		guid = uuid.v4();
 	} while(this.clientsByGuid[guid]);
 	client.guid = guid;
 	this.clientsByGuid[guid] = client;
-	return true;
 }
 IrcServer.prototype.getOrCreateChannel = function(channelName, opt_clientOperator) {
 	var channel = this.channels[channelName];
@@ -152,6 +175,7 @@ IrcServer.prototype.killClient = function(client, killReason) {
 	delete this.clientsByName[client.nick];
 	delete this.clientsByGuid[client.guid];
 	client.close();
+	this.emit('kill', {guid: client.guid, nick: client.nick});
 }
 IrcServer.prototype.clientJoinsChannel = function(client, channelName, key) {
 	// @TODO: use key
@@ -179,9 +203,10 @@ IrcServer.prototype.clientLeavesChannel = function(client, channelOrName, killRe
 }
 IrcServer.prototype.start = function(ip, port) {
 	var self = this;
+	this.timeCreated = (new Date()).toUTCString();
 	net.createServer(function(c) {
-		var client = new Client(self, c);
-		console.log('NEW '+c.nick);
+		var client = new Client(c);
+		console.log('NEW client');
 
 		c.on('data', function(data) {
 			data = String(data); // always string data
@@ -203,7 +228,7 @@ IrcServer.prototype.start = function(ip, port) {
 		});
 		c.on('end', function() {
 			self.killClient(client, KILLREASON.connectionClosed);
-			console.log('END');
+			console.log('END client');
 		});
 	}).listen(port, ip);
 }
@@ -276,7 +301,7 @@ Channel.prototype.deliverMessage = function(client, message) {
 	this.deliver(preparedMessage, client);
 }
 
-function Client(server, socket) {
+function Client(socket) {
 	this.socket = socket;
 	this.socketClosed = false;
 	this.state = STATE.initial;
@@ -286,16 +311,20 @@ function Client(server, socket) {
 }
 Client.prototype.close = function() {
 	this.socketClosed = true;
-	this.socket.destroy();
+	if (this.socket)
+		this.socket.destroy();
 }
 Client.prototype.write = function(data) {
 	if (this.socketClosed) return;
 	console.log('<< '+data);
 	return this.socket.write(data+'\r\n');
 }
+Client.prototype.getRemoteAddress = function() {
+	return this.socket.remoteAddress;
+}
 Client.prototype.getIdentifier = function() {
 	// @TODO: only a prototype yet
-	return this.nick+'!~'+this.nick+'@'+this.socket.remoteAddress;
+	return this.nick+'!~'+this.nick+'@'+this.getRemoteAddress();
 }
 Client.prototype.setNickName = function(nick) {
 	this.nick = nick;
@@ -303,7 +332,7 @@ Client.prototype.setNickName = function(nick) {
 Client.prototype.sendWelcome = function() {
 	this.answer('001 '+servNick+' :Welcome to the fancy IRC server '+this.nick+'!');
 	this.answer('002 '+servNick+' :Your host is '+servHostname+' running version '+version);
-	this.answer('003 '+servNick+' :This server was created '+timeCreated);
+	this.answer('003 '+servNick+' :This server was created '+this.timeCreated);
 	this.answer('004 '+servNick+' '+servHostname+' '+version);
 }
 Client.prototype.addChannel = function(channel) {
