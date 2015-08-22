@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node example.js"
   },
-  "main": "example.js",
+  "main": "libircd.js",
   "license": {
     "type": "MIT",
     "url": "https://github.com/icetruckde/libircd.js/blob/master/LICENSE"
@@ -20,8 +20,8 @@
   },
   "dependencies": {
     "net": "^1.0.x",
-    "node-uuid": "^1.4.x"
-	"sha1": ">=1.1.1"
+    "node-uuid": "^1.4.x",
+    "sha1": ">=1.1.1"
   },
   "repository": {
     "type": "git",
