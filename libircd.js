@@ -8,7 +8,7 @@ var sha1 = require('sha1');
 var EventEmitter = require('events').EventEmitter;
 var util = require('util');
 
-var version = '0.1.2';
+var version = '0.1.1';
 var servNick = 'example.com';
 var servHostname = 'example.com';
 
@@ -119,7 +119,7 @@ IrcServer.prototype.isValidChannelName = function(name) {
 		if (IrcServer.invalidChannelNameCharacters.indexOf(name.charCodeAt(i)) >= 0) return false;
 	return true;
 }
-IrcServer.nickNameValidator = new RegExp('^[a-z]([a-z0-9\\[\\]\\\\`^{}_-])*$', 'i');
+IrcServer.nickNameValidator = new RegExp('^[a-z_]([a-z0-9\\[\\]\\\\`^{}_-])*$', 'i');
 IrcServer.prototype.isNickInUse = function(name) {
 	return !!this.clientsByName[name];
 }
@@ -132,6 +132,7 @@ IrcServer.prototype.isValidNickName = function(name) {
 	return IrcServer.nickNameValidator.test(name);
 }
 IrcServer.prototype.checkSetNick = function(client, nick) {
+	if (nick.length > 0 && nick[0] == ':') nick = nick.substr(1);	
 	if (!nick || nick.length == 0) {
 		client.answer('431 '+nick+' :No nickname given');
 		return false;
