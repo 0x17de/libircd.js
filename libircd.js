@@ -347,7 +347,8 @@ Client.prototype.removeChannel = function(channel) {
 	delete this.channels[channel.name];
 	this.channelCount -= 1;
 }
-Client.prototype.answer = function(str) {
-	return this.write(':'+servHostname+' '+str);
+Client.prototype.answer = function(str, from) {
+        if (!from) from = this.getIdentifier();	
+	return this.write(':'+from+' '+str);
 }
 
