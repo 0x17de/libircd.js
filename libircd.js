@@ -8,7 +8,7 @@ var sha1 = require('sha1');
 var EventEmitter = require('events').EventEmitter;
 var util = require('util');
 
-var version = '0.1.1';
+var version = '0.1.2';
 var servNick = 'example.com';
 var servHostname = 'example.com';
 
@@ -79,10 +79,10 @@ var handlerMap = {
 		var channelString = splitData[1] || "";
 		if (channelString.length == 0) return;
 		var channelList = channelString.split(",");
-		for(var i = 0; i < channelList.length; ++i) {
-			server.clientLeavesChannel(client, channelList[i]);
-			server.emit('roomchange', {guid: client.guid, nick: client.nick, bJoin: false, channel: channelList[i]});
-		}
+		channelList.forEach(function(channelName) {
+			server.clientLeavesChannel(client, channelName);
+			server.emit('roomchange', {guid: client.guid, nick: client.nick, bJoin: false, channel: channelName});
+		});
 	},
 	PING: function(server, client, splitData, line) {
 		client.answer('PONG '+servHostname+' :'+splitData[1]);
@@ -102,6 +102,7 @@ var handlerMap = {
 };
 
 function IrcServer(opt_password) {
+	EventEmitter.call(this);
 	this.password = opt_password;
 	this.passwordSha1 = opt_password ? sha1(opt_password) : null;
 
@@ -112,7 +113,7 @@ function IrcServer(opt_password) {
 util.inherits(IrcServer, EventEmitter);
 IrcServer.invalidChannelNameCharacters = [0x20, 0x0b, 0x00, 0x0d, 0x0a, 0x2c];
 IrcServer.prototype.isValidChannelName = function(name) {
-	if (name.length == 0) return false;
+	if (!name || name.length == 0) return false;
 	if (name[0] != '#' && name[0] != '&') return false;
 	for (var i = 0; i < name.length; ++i)
 		if (IrcServer.invalidChannelNameCharacters.indexOf(name.charCodeAt(i)) >= 0) return false;
@@ -180,6 +181,7 @@ IrcServer.prototype.killClient = function(client, killReason) {
 IrcServer.prototype.clientJoinsChannel = function(client, channelName, key) {
 	// @TODO: use key
 	if (!this.isValidChannelName(channelName)) {
+		console.log('Invalid channel join: '+client.nick+' to '+channelName);
 		client.answer('479 :'+channelName); // @TODO: add all nicks of channel
 		return;
 	}
@@ -306,6 +308,7 @@ function Client(socket) {
 	this.socketClosed = false;
 	this.state = STATE.initial;
 	this.channels = {};
+	this.channelCount = 0;
 	this.nick = null;
 	this.guid = null;
 }
@@ -337,9 +340,11 @@ Client.prototype.sendWelcome = function() {
 }
 Client.prototype.addChannel = function(channel) {
 	this.channels[channel.name] = channel;
+	this.channelCount += 1;
 }
 Client.prototype.removeChannel = function(channel) {
 	delete this.channels[channel.name];
+	this.channelCount -= 1;
 }
 Client.prototype.answer = function(str) {
 	return this.write(':'+servHostname+' '+str);
