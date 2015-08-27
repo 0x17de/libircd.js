@@ -8,7 +8,7 @@ var sha1 = require('sha1');
 var EventEmitter = require('events').EventEmitter;
 var util = require('util');
 
-var version = '0.1.1';
+var version = '0.1.3';
 var servHostname = 'example.com';
 
 var STATE = {
