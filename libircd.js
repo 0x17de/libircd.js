@@ -9,7 +9,6 @@ var EventEmitter = require('events').EventEmitter;
 var util = require('util');
 
 var version = '0.1.1';
-var servNick = 'example.com';
 var servHostname = 'example.com';
 
 var STATE = {
@@ -23,6 +22,7 @@ var KILLREASON = {
 	badPassword: 3,
 	kick: 4
 };
+exports.KILLREASON = KILLREASON;
 
 var handlerMap = {
 	CAP: function(server, client, splitData, line) {
@@ -30,12 +30,20 @@ var handlerMap = {
 		case 'LS':
 			client.answer('CAP * LS :multi-prefix');
 			break;
-		case 'RE':
-			if (splitData[2] == 'Q'
-			 && client.state == STATE.ready)
-				client.answer('CAP '+client.nick+' ACK :multi-previx');
+		case 'REQ':
+			client.requests.push(splitData.slice(2));
+			if (client.requests.length > 20)
+				server.killClient(client, KILLREASON.kill);
 			break;
 		case 'END':
+			if (client.state != STATE.ready)
+				break;
+			client.requests.forEach(function(req) {
+				switch (req[0]) {
+				case ':multi-prefix':
+					client.answer('CAP '+client.nick+' ACK '+req[0]);
+				}
+			});
 			break;
 		default:
 			console.log('Unknown cap: '+splitData[1]);
@@ -54,6 +62,7 @@ var handlerMap = {
 			client.state = STATE.ready;
 	},
 	USER: function(server, client, splitData, line) {
+		client.user = splitData[1];
 		client.sendWelcome();
 	},
 	JOIN: function(server, client, splitData, line) {
@@ -91,7 +100,8 @@ var handlerMap = {
 		if (client.state != STATE.ready) return;
 
 		var channelName = splitData[1];
-		var message = line.substr(splitData[0].length+splitData[1].length+3);
+		var message = line.substr(splitData[0].length+splitData[1].length+2);
+		if (message[0] == ':') message = message.substr(1);
 
 		var channel = client.channels[channelName];
 		if (!channel) return;
@@ -111,7 +121,7 @@ function IrcServer(opt_password) {
 	this.channels = {};
 }
 util.inherits(IrcServer, EventEmitter);
-IrcServer.invalidChannelNameCharacters = [0x20, 0x0b, 0x00, 0x0d, 0x0a, 0x2c];
+IrcServer.invalidChannelNameCharacters = [0x20, 0x07, 0x00, 0x0d, 0x0a, 0x2c];
 IrcServer.prototype.isValidChannelName = function(name) {
 	if (!name || name.length == 0) return false;
 	if (name[0] != '#' && name[0] != '&') return false;
@@ -126,7 +136,7 @@ IrcServer.prototype.isNickInUse = function(name) {
 IrcServer.prototype.kick = function(nickOrClient, channelOrName) {
 	var client = (nickOrClient instanceof Client) ? nickOrClient : this.clientsByName[nickOrClient];
 	if (!client) return;
-	this.clientLeavesChannel(client, channelOrNick, KILLREASON.kick);
+	this.clientLeavesChannel(client, channelOrName, KILLREASON.kick);
 }
 IrcServer.prototype.isValidNickName = function(name) {
 	return IrcServer.nickNameValidator.test(name);
@@ -162,8 +172,10 @@ IrcServer.prototype.addClient = function(client) {
 }
 IrcServer.prototype.getOrCreateChannel = function(channelName, opt_clientOperator) {
 	var channel = this.channels[channelName];
-	if (!channel) this.channels[channelName] = channel = new Channel(channelName, opt_clientOperator);
-	console.log("Channel created: "+channel.name);
+	if (!channel) {
+		this.channels[channelName] = channel = new Channel(channelName, opt_clientOperator);
+		console.log("Channel created: "+channel.name);
+	}
 	return channel;
 }
 IrcServer.prototype.killClient = function(client, killReason) {
@@ -204,12 +216,21 @@ IrcServer.prototype.clientLeavesChannel = function(client, channelOrName, killRe
 		delete this.channels[channelOrName];
 	}
 }
+IrcServer.prototype.removeChannel = function(channelOrName) {
+	var channel = (channelOrName instanceof Channel) ? channelOrName : this.channels[channelOrName];
+	if (!channel) {
+		console.log("CLOSE Invalid channel: "+channelOrName);
+		return;
+	}
+	for (var i in channel.clients)
+		this.kick(channel.clients[i], channel);
+}
 IrcServer.prototype.start = function(ip, port) {
 	var self = this;
 	this.timeCreated = (new Date()).toUTCString();
 	net.createServer(function(c) {
-		var client = new Client(c);
 		console.log('NEW client');
+		var client = new Client(c);
 
 		c.on('data', function(data) {
 			data = String(data); // always string data
@@ -234,6 +255,7 @@ IrcServer.prototype.start = function(ip, port) {
 			console.log('END client');
 		});
 	}).listen(port, ip);
+	console.log("Listening on ip: "+ip+" port: "+port);
 }
 
 function Channel(name, clientOperator) {
@@ -275,8 +297,8 @@ Channel.prototype.addClient = function(client) {
 	console.log('Channel '+this.name+' JOIN client: '+client.nick);
 	this.clients[client.guid] = client;
 	// @TODO: send topic to client
-	client.answer('JOIN :'+this.name);
-	this.deliver(':'+client.getIdentifier()+' JOIN :'+this.name, client);
+	client.answerFrom('JOIN :'+this.name, client.getIdentifier());
+	this.deliverFrom('JOIN :'+this.name, client.nick, client);
 	this.sendUserList(client);
 	this.clientCount += 1;
 }
@@ -288,9 +310,12 @@ Channel.prototype.removeClient = function(client) {
 	console.log('Channel '+this.name+' PART client: '+client.nick);
 	delete this.privileges[client.guid];
 	delete this.clients[client.guid];
-	client.answer('PART :'+this.name);
-	this.deliver(':'+client.getIdentifier()+' PART :'+this.name, client);
+	client.answerFrom('PART :'+this.name, client.getIdentifier());
+	this.deliverFrom('PART :'+this.name, client.nick, client);
 	this.clientCount -= 1;
+}
+Channel.prototype.deliverFrom = function(message, str, opt_excludeClient) {
+	this.deliver(':'+str+' '+message, opt_excludeClient);
 }
 Channel.prototype.deliver = function(message, opt_excludeClient) {
 	for (var i in this.clients) {
@@ -300,12 +325,15 @@ Channel.prototype.deliver = function(message, opt_excludeClient) {
 	}
 }
 Channel.prototype.deliverMessage = function(client, message) {
-	var preparedMessage = ':'+client.getIdentifier()+' PRIVMSG '+this.name+' :'+message;
-	this.deliver(preparedMessage, client);
+	// no answer to sending client
+	this.deliverFrom('PRIVMSG '+this.name+' :'+message, client.getServerIdentifier(true), client);
 }
 
-function Client(socket) {
+function Client(socket, serverHostname) {
 	this.socket = socket;
+	this.serverHostname = (serverHostname == servHostname ? null : serverHostname);
+	this.host = this.getRemoteAddress();
+	this.requests = [];
 	this.socketClosed = false;
 	this.state = STATE.initial;
 	this.channels = {};
@@ -319,25 +347,38 @@ Client.prototype.close = function() {
 		this.socket.destroy();
 }
 Client.prototype.write = function(data) {
-	if (this.socketClosed) return;
-	console.log('<< '+data);
-	return this.socket.write(data+'\r\n');
+	if (this.serverHostname) {
+		// @TODO: handle remote hosts
+	} else {
+		if (this.socketClosed) return;
+		console.log('<< '+data);
+		return this.socket.write(data+'\r\n');
+	}
 }
 Client.prototype.getRemoteAddress = function() {
 	return this.socket.remoteAddress;
 }
+Client.prototype.sameServer = function() {
+	return this.serverHostname == servHostname;
+}
+Client.prototype.getServerHostname = function() {
+	if (this.serverHostname) return this.serverHostname;
+	return servHostname;
+}
+Client.prototype.getServerIdentifier = function(bExtended) {
+	return this.nick+(bExtended?'!~'+this.user:'')+'@'+this.getServerHostname();
+}
 Client.prototype.getIdentifier = function() {
-	// @TODO: only a prototype yet
-	return this.nick+'!~'+this.nick+'@'+this.getRemoteAddress();
+	return this.nick+'!~'+this.user+'@'+this.getRemoteAddress();
 }
 Client.prototype.setNickName = function(nick) {
 	this.nick = nick;
 }
 Client.prototype.sendWelcome = function() {
-	this.answer('001 '+servNick+' :Welcome to the fancy IRC server '+this.nick+'!');
-	this.answer('002 '+servNick+' :Your host is '+servHostname+' running version '+version);
-	this.answer('003 '+servNick+' :This server was created '+this.timeCreated);
-	this.answer('004 '+servNick+' '+servHostname+' '+version);
+	this.answer('001 '+servHostname+' :Welcome to the fancy IRC server '+this.nick+'!'+this.user+'@'+this.getServerHostname());
+	this.answer('002 '+servHostname+' :Your host is '+servHostname+' running version '+version);
+	this.answer('003 '+servHostname+' :This server was created '+this.timeCreated);
+	this.answer('004 '+servHostname+' '+servHostname+' '+version);
 }
 Client.prototype.addChannel = function(channel) {
 	this.channels[channel.name] = channel;
@@ -347,8 +388,13 @@ Client.prototype.removeChannel = function(channel) {
 	delete this.channels[channel.name];
 	this.channelCount -= 1;
 }
-Client.prototype.answer = function(str, from) {
-	if (!from) from = this.getIdentifier();	
+Client.prototype.answerSimple = function(str) {
+	return this.write(str);
+}
+Client.prototype.answerFrom = function(str, from) {
 	return this.write(':'+from+' '+str);
+}
+Client.prototype.answer = function(str) {
+	this.answerFrom(str, this.getServerHostname());
 }
 
