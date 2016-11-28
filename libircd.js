@@ -375,10 +375,10 @@ Client.prototype.setNickName = function(nick) {
 	this.nick = nick;
 }
 Client.prototype.sendWelcome = function() {
-	this.answer('001 '+servHostname+' :Welcome to the fancy IRC server '+this.nick+'!'+this.user+'@'+this.getServerHostname());
-	this.answer('002 '+servHostname+' :Your host is '+servHostname+' running version '+version);
-	this.answer('003 '+servHostname+' :This server was created '+this.timeCreated);
-	this.answer('004 '+servHostname+' '+servHostname+' '+version);
+	this.answer('001 '+this.nick+' :Welcome to the fancy IRC server '+this.nick+'!'+this.user+'@'+this.getServerHostname());
+	this.answer('002 '+this.nick+' :Your host is '+servHostname+' running version '+version);
+	this.answer('003 '+this.nick+' :This server was created '+this.timeCreated);
+	this.answer('004 '+this.nick+' '+servHostname+' '+version);
 }
 Client.prototype.addChannel = function(channel) {
 	this.channels[channel.name] = channel;
